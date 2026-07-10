@@ -1,0 +1,38 @@
+# syntax=docker/dockerfile:1
+FROM python:3.11-slim AS base
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt requirements-stt.txt ./
+
+# STT_FULL=1 to build with real SenseVoice/FunASR deps (torch + funasr —
+# large, several GB). Default is dummy-engine-only for a lightweight image
+# you can still boot and integration-test against.
+ARG STT_FULL=0
+RUN if [ "$STT_FULL" = "1" ]; then \
+        pip install --no-cache-dir -r requirements-stt.txt; \
+    else \
+        pip install --no-cache-dir -r requirements.txt; \
+    fi
+
+COPY common ./common
+COPY stt ./stt
+COPY config ./config
+
+RUN useradd --create-home --uid 1000 leviathan && chown -R leviathan:leviathan /app
+USER leviathan
+
+EXPOSE 9001
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=5 \
+    CMD curl -fsS http://localhost:9001/health || exit 1
+
+CMD ["python", "-m", "stt.app"]

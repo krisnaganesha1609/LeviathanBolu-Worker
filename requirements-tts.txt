@@ -1,0 +1,6 @@
+-r requirements.txt
+kokoro-onnx>=0.5.0
+soundfile>=0.12
+scipy>=1.13
+# optional, better pitch shifting — comment out if you don't need it
+librosa>=0.10

@@ -1,0 +1,14 @@
+# Core runtime — sufficient for DUMMY engine mode (no ML weights needed).
+# For real inference, also install requirements-stt.txt and/or requirements-tts.txt.
+fastapi>=0.111,<1.0
+uvicorn[standard]>=0.30,<1.0
+websockets>=12.0,<13.0
+pydantic>=2.7,<3.0
+pydantic-settings>=2.3,<3.0
+structlog>=24.1,<25.0
+python-dotenv>=1.0,<2.0
+numpy>=1.26,<2.0
+orjson>=3.10,<4.0
+httpx>=0.27,<1.0
+anyio>=4.4,<5.0
+pyyaml>=6.0,<7.0

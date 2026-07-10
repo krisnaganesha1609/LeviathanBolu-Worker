@@ -1,0 +1,25 @@
+# Personality -> Kokoro voice mapping.
+#
+# Flutter/Go only ever send a personality NAME ("LEVIATHAN", "BOLU", ...);
+# they never know or send a Kokoro voice id. Add a new personality by
+# adding an entry here — no code change needed.
+#
+# pitch is in semitones and applied as a post-process on top of Kokoro's
+# native output (see tts/kokoro_engine.py); it degrades gracefully to a
+# no-op with a logged warning if the optional `librosa` extra isn't
+# installed (requirements-tts.txt).
+
+default: LEVIATHAN
+
+personalities:
+  LEVIATHAN:
+    voice: am_adam
+    speed: 0.90
+    pitch: -1
+    lang: en-us
+
+  BOLU:
+    voice: af_bella
+    speed: 1.15
+    pitch: 2
+    lang: en-us

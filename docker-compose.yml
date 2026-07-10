@@ -1,0 +1,63 @@
+version: "3.9"
+
+# Usage:
+#   docker compose up --build                       # dummy engines, fast, no model weights
+#   STT_FULL=1 TTS_FULL=1 docker compose up --build  # real SenseVoice + Kokoro (needs model weights mounted)
+#
+# Go's assistant/stt_tts.go should point at:
+#   STT: ws://leviathan-stt:9001/stt   (or ws://localhost:9001/stt from the host)
+#   TTS: ws://leviathan-tts:9002/tts   (or ws://localhost:9002/tts from the host)
+
+services:
+  stt:
+    build:
+      context: .
+      dockerfile: docker/stt.Dockerfile
+      args:
+        STT_FULL: ${STT_FULL:-0}
+    container_name: leviathan-stt
+    env_file:
+      - .env
+    environment:
+      STT_ENGINE: ${STT_ENGINE:-dummy}
+    ports:
+      - "9001:9001"
+    volumes:
+      - ./config:/app/config:ro
+      - stt-model-cache:/home/leviathan/.cache
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9001/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+
+  tts:
+    build:
+      context: .
+      dockerfile: docker/tts.Dockerfile
+      args:
+        TTS_FULL: ${TTS_FULL:-0}
+    container_name: leviathan-tts
+    env_file:
+      - .env
+    environment:
+      TTS_ENGINE: ${TTS_ENGINE:-dummy}
+    ports:
+      - "9002:9002"
+    volumes:
+      - ./config:/app/config:ro
+      - ./models:/models:ro   # mount kokoro-v1.0.onnx + voices-v1.0.bin here for TTS_ENGINE=kokoro
+      - tts-model-cache:/home/leviathan/.cache
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9002/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+
+volumes:
+  stt-model-cache:
+  tts-model-cache:

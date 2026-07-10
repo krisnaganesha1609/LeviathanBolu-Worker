@@ -1,0 +1,94 @@
+# ── Environment & Secrets ─────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+.eggs/
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ── Type checkers & linters ───────────────────────────────────────────────────
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pytype/
+
+# ── Testing & coverage ────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.cover
+*.log
+
+# ── ML Model weights (large binary files, mount via volume in Docker) ─────────
+models/
+*.onnx
+*.bin
+*.pt
+*.pth
+*.safetensors
+
+# FunASR / ModelScope auto-downloaded weights cache
+# (lives in ~/.cache inside container, but guard against local runs too)
+~/.cache/modelscope/
+~/.cache/funasr/
+.cache/
+
+# ── Docker ────────────────────────────────────────────────────────────────────
+# Keep docker-compose.yml and Dockerfiles tracked.
+# Ignore any local override files.
+docker-compose.override.yml
+docker-compose.local.yml
+
+# ── IDE & OS ──────────────────────────────────────────────────────────────────
+# VSCode
+.vscode/
+*.code-workspace
+
+# JetBrains (PyCharm, etc.)
+.idea/
+*.iml
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
+*.log
+*.tmp
+*.swp
+*.swo
