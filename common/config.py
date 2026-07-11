@@ -89,6 +89,14 @@ class STTSettings(BaseSettings):
     # Empty string (default) = disabled, zero overhead.
     debug_dump_audio_dir: str = ""
 
+    # Defense-in-depth against a noisy/misconfigured client VAD sending
+    # near-silent audio: skip the (expensive, and prone to hallucinating
+    # garbage on pure noise — see ADR-005) final inference call entirely
+    # if the buffered utterance is too short or too quiet to plausibly be
+    # speech. This does NOT replace fixing VAD calibration on the client;
+    # it just stops obvious noise from ever reaching the model.
+    min_utterance_ms: int = Field(default=300, ge=0)
+
 
 class TTSSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="TTS_", env_file=".env", extra="ignore")

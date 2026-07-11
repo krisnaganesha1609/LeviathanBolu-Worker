@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import time
 
-from common.audio import AudioMetrics
+from common.audio import AudioMetrics, rms_energy
 from common.config import AudioSettings, STTSettings
 from common.errors import STTErrorCode, WorkerError
 from common.logger import LatencyLogger, get_logger
@@ -185,7 +185,7 @@ class STTSession:
             self._maybe_dump_wav(full_audio)
             start = time.perf_counter()
             with self._latency.stage("final_inference"):
-                if full_audio.size == 0:
+                if self._too_quiet_or_short(full_audio):
                     result = TranscriptResult(text="", is_final=True)
                 else:
                     try:
@@ -212,6 +212,35 @@ class STTSession:
             **self.audio_metrics.as_dict(),
         )
         return result
+
+    def _too_quiet_or_short(self, audio) -> bool:
+        """
+        Gate final inference on obviously-not-speech audio (ADR-005
+        addendum): a misconfigured/over-sensitive client-side VAD sending
+        pure noise/silence not only wastes an inference call but, for
+        encoder-decoder ASR models like SenseVoice, tends to produce
+        hallucinated-but-plausible-looking text on pure noise input rather
+        than an empty string. Better to recognize "this isn't speech" here
+        and return "" directly than let the model guess.
+        """
+        duration_ms = (len(audio) / self.audio_settings.sample_rate) * 1000 if len(audio) else 0
+        if duration_ms < self.stt_settings.min_utterance_ms:
+            log.info(
+                "stt.session.skipped_too_short",
+                session_id=self.session_id,
+                duration_ms=round(duration_ms, 1),
+                min_utterance_ms=self.stt_settings.min_utterance_ms,
+            )
+            return True
+        if rms_energy(audio) < self.stt_settings.vad_rms_threshold:
+            log.info(
+                "stt.session.skipped_too_quiet",
+                session_id=self.session_id,
+                rms=round(rms_energy(audio), 1),
+                threshold=self.stt_settings.vad_rms_threshold,
+            )
+            return True
+        return False
 
     def _maybe_dump_wav(self, audio) -> None:
         """Debug helper — see STT_DEBUG_DUMP_AUDIO_DIR in .env. Writes the
