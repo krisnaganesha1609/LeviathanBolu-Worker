@@ -4,7 +4,7 @@
 Accepted
 
 ## Context
-SenseVoice/FunASR and Kokoro model load times are on the order of
+faster-whisper (CTranslate2) and Kokoro model load times are on the order of
 seconds; loading per-request would add unacceptable latency to every
 single utterance ("nanti latency 20 detik" per the project brief).
 
@@ -27,7 +27,7 @@ can't trigger a duplicate load.
   failure (e.g. model download not finished yet) can still self-heal
   without a restart.
 - Inference calls always run on `loop.run_in_executor(None, ...)` — both
-  FunASR and Kokoro-ONNX are blocking/CPU-bound, and running them
+  faster-whisper (CTranslate2) and Kokoro-ONNX are blocking/CPU-bound, and running them
   in-line on the event loop would stall every other concurrent
   session's WebSocket I/O.
 - There is deliberately no "unload on idle" path. Model memory is paid

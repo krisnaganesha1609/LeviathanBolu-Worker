@@ -1,5 +1,6 @@
 -r requirements.txt
-torch>=2.2
-torchaudio>=2.2
-funasr>=1.3.12
-modelscope
+# faster-whisper (CTranslate2 backend) — no torch dependency, much lighter
+# than SenseVoice/FunASR. Pulls in onnxruntime (used both for faster-whisper's
+# own vad_filter=True and our standalone stt/silero_vad.py gate).
+faster-whisper>=1.0,<2.0
+onnxruntime>=1.18,<2.0

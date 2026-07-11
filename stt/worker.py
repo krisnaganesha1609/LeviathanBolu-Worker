@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import time
 
-from common.audio import AudioMetrics, rms_energy
+from common.audio import AudioMetrics
 from common.config import AudioSettings, STTSettings
 from common.errors import STTErrorCode, WorkerError
 from common.logger import LatencyLogger, get_logger
@@ -36,7 +36,8 @@ from common.utils import new_id
 from stt.decoder import PCMFrameDecoder
 from stt.models import STTSessionState, TranscriptResult
 from stt.ring_buffer import SpeechSegmenter, VADConfig
-from stt.sensevoice_engine import STTEngine
+from stt.silero_vad import SileroVAD
+from stt.whisper_engine import STTEngine
 
 log = get_logger(__name__)
 
@@ -48,6 +49,7 @@ class STTSession:
         audio_settings: AudioSettings,
         stt_settings: STTSettings,
         metrics: MetricsRegistry,
+        silero_vad: SileroVAD,
         *,
         session_id: str | None = None,
         conversation_id: str | None = None,
@@ -56,6 +58,7 @@ class STTSession:
         self.audio_settings = audio_settings
         self.stt_settings = stt_settings
         self.metrics_registry = metrics
+        self.silero_vad = silero_vad
         self.state = STTSessionState()
         self.session_id = session_id or new_id("stt")
         self.conversation_id = conversation_id or ""
@@ -185,7 +188,7 @@ class STTSession:
             self._maybe_dump_wav(full_audio)
             start = time.perf_counter()
             with self._latency.stage("final_inference"):
-                if self._too_quiet_or_short(full_audio):
+                if await self._too_quiet_or_short(full_audio):
                     result = TranscriptResult(text="", is_final=True)
                 else:
                     try:
@@ -213,15 +216,17 @@ class STTSession:
         )
         return result
 
-    def _too_quiet_or_short(self, audio) -> bool:
+    async def _too_quiet_or_short(self, audio) -> bool:
         """
         Gate final inference on obviously-not-speech audio (ADR-005
         addendum): a misconfigured/over-sensitive client-side VAD sending
-        pure noise/silence not only wastes an inference call but, for
-        encoder-decoder ASR models like SenseVoice, tends to produce
+        pure noise/silence not only wastes an inference call but,
+        for encoder-decoder ASR models like Whisper, tends to produce
         hallucinated-but-plausible-looking text on pure noise input rather
         than an empty string. Better to recognize "this isn't speech" here
-        and return "" directly than let the model guess.
+        (using a real trained VAD, not an amplitude threshold — an RMS
+        cutoff can't tell "wind gust" from "quiet speech") and return ""
+        directly than let the model guess.
         """
         duration_ms = (len(audio) / self.audio_settings.sample_rate) * 1000 if len(audio) else 0
         if duration_ms < self.stt_settings.min_utterance_ms:
@@ -232,12 +237,18 @@ class STTSession:
                 min_utterance_ms=self.stt_settings.min_utterance_ms,
             )
             return True
-        if rms_energy(audio) < self.stt_settings.vad_rms_threshold:
+        # Silero VAD runs on onnxruntime — blocking/CPU-bound, same as any
+        # other model inference (ADR-004): always via run_in_executor, never
+        # called directly on the event loop.
+        loop = asyncio.get_running_loop()
+        has_speech = await loop.run_in_executor(
+            None, self.silero_vad.has_speech, audio, self.audio_settings.sample_rate
+        )
+        if not has_speech:
             log.info(
-                "stt.session.skipped_too_quiet",
+                "stt.session.skipped_no_speech_detected",
                 session_id=self.session_id,
-                rms=round(rms_energy(audio), 1),
-                threshold=self.stt_settings.vad_rms_threshold,
+                duration_ms=round(duration_ms, 1),
             )
             return True
         return False

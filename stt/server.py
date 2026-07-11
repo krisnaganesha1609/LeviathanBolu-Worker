@@ -24,7 +24,8 @@ from common.logger import configure_logging, get_logger
 from common.metrics import stt_metrics
 from common.protocol import HealthResponse, STTEndAction, STTFinalTranscript, STTPartialTranscript
 from common.websocket import send_json
-from stt.sensevoice_engine import STTEngine, build_engine
+from stt.silero_vad import SileroVAD
+from stt.whisper_engine import STTEngine, build_engine
 from stt.worker import STTSession
 
 log = get_logger(__name__)
@@ -37,11 +38,14 @@ async def lifespan(app: FastAPI):
     configure_logging()
     settings = get_stt_settings()
     engine: STTEngine = build_engine(settings)
+    silero_vad = SileroVAD(threshold=settings.silero_vad_threshold)
     log.info("stt.server.starting", engine=settings.engine, host=settings.host, port=settings.port)
     start = time.monotonic()
     await engine.warm_up()  # model lifecycle: load once at startup, not per-request
+    await asyncio.get_running_loop().run_in_executor(None, silero_vad.warm_up)
     log.info("stt.server.ready", warm_up_seconds=round(time.monotonic() - start, 2))
     app.state.engine = engine
+    app.state.silero_vad = silero_vad
     app.state.started_at = time.monotonic()
     yield
     log.info("stt.server.shutdown")
@@ -99,11 +103,12 @@ async def stt_endpoint(websocket: WebSocket) -> None:
     audio_settings = get_audio_settings()
     stt_settings = get_stt_settings()
     engine: STTEngine = app.state.engine
+    silero_vad: SileroVAD = app.state.silero_vad
 
     session_id = websocket.query_params.get("session_id")
     conversation_id = websocket.query_params.get("conversation_id")
     session = STTSession(
-        engine, audio_settings, stt_settings, stt_metrics,
+        engine, audio_settings, stt_settings, stt_metrics, silero_vad,
         session_id=session_id, conversation_id=conversation_id,
     )
 

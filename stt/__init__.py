@@ -1,1 +1,1 @@
-"""STT worker: SenseVoice/FunASR speech-to-text over WebSocket."""
+"""STT worker: faster-whisper (CTranslate2) speech-to-text over WebSocket."""

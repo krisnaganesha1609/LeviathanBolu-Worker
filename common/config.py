@@ -57,13 +57,25 @@ class STTSettings(BaseSettings):
 
     host: str = "0.0.0.0"
     port: int = 9001
-    engine: Literal["dummy", "sensevoice"] = "dummy"
-    model: str = "iic/SenseVoiceSmall"
-    vad_model: str = "fsmn-vad"
-    device: str = "cpu"
-    language: str = "auto"
+    engine: Literal["dummy", "whisper"] = "dummy"
+    # faster-whisper model size/name. "small" is the sweet spot for a 4GB
+    # RAM VPS running CPU-only alongside the TTS worker + Go orchestrator +
+    # DB — good multilingual (incl. Indonesian, unlike SenseVoiceSmall)
+    # accuracy without the ~1GB+ runtime footprint of "medium"/"large-v3".
+    # Drop to "base"/"tiny" if memory is still tight; go "medium" only if
+    # this VPS is STT-dedicated with headroom to spare.
+    model: str = "small"
+    device: str = "cpu"  # ctranslate2: "cpu" | "cuda" | "auto"
+    # int8 = lowest memory + fastest on CPU, small accuracy tradeoff vs
+    # float32. Good default for a RAM-constrained VPS.
+    compute_type: str = "int8"
     cpu_threads: int = Field(default=4, ge=1)
     use_gpu: bool = False
+    language: str = "auto"  # "auto" | "en" | "id" | any Whisper language code
+    # Beam search width. Partials use beam_size=1 (greedy, fast) regardless
+    # of this setting — see WhisperEngine.transcribe(); this value is only
+    # used for the authoritative final pass.
+    beam_size: int = Field(default=5, ge=1)
 
     # Silence/segmentation policy (ADR-005): speech considered started once
     # RMS energy crosses vad_rms_threshold; a partial is offered no more
@@ -92,10 +104,12 @@ class STTSettings(BaseSettings):
     # Defense-in-depth against a noisy/misconfigured client VAD sending
     # near-silent audio: skip the (expensive, and prone to hallucinating
     # garbage on pure noise — see ADR-005) final inference call entirely
-    # if the buffered utterance is too short or too quiet to plausibly be
-    # speech. This does NOT replace fixing VAD calibration on the client;
-    # it just stops obvious noise from ever reaching the model.
+    # if the buffered utterance is too short, or Silero VAD (bundled with
+    # faster-whisper — see stt/silero_vad.py) finds no speech in it at all.
+    # This does NOT replace fixing VAD calibration on the client; it just
+    # stops obvious noise from ever reaching the model.
     min_utterance_ms: int = Field(default=300, ge=0)
+    silero_vad_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
 class TTSSettings(BaseSettings):

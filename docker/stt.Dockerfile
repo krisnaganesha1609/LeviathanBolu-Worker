@@ -8,28 +8,27 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt requirements-stt.txt ./
 
-# STT_FULL=1 to build with real SenseVoice/FunASR deps (torch + funasr —
-# large, several GB). Default is dummy-engine-only for a lightweight image
-# you can still boot and integration-test against.
+# STT_FULL=1 to build with real faster-whisper deps (no torch — much
+# smaller/lighter than the old SenseVoice/FunASR stack). Default is
+# dummy-engine-only for a lightweight image you can still boot and
+# integration-test against.
 ARG STT_FULL=0
 RUN if [ "$STT_FULL" = "1" ]; then \
-    pip install --no-cache-dir -r requirements-stt.txt; \
+        pip install --no-cache-dir -r requirements-stt.txt; \
     else \
-    pip install --no-cache-dir -r requirements.txt; \
+        pip install --no-cache-dir -r requirements.txt; \
     fi
 
 COPY common ./common
 COPY stt ./stt
 COPY config ./config
 
-RUN useradd --create-home --uid 1000 leviathan \
-    && mkdir -p /home/leviathan/.cache/modelscope \
-    && chown -R leviathan:leviathan /app /home/leviathan
+RUN useradd --create-home --uid 1000 leviathan && chown -R leviathan:leviathan /app
 USER leviathan
 
 EXPOSE 9001

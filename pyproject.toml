@@ -1,7 +1,7 @@
 [project]
 name = "leviathan-workers"
 version = "1.0.0"
-description = "LEVIATHAN — STT (SenseVoice/FunASR) & TTS (Kokoro) asyncio worker microservices"
+description = "LEVIATHAN — STT (faster-whisper + Silero VAD) & TTS (Kokoro) asyncio worker microservices"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 license = { text = "Proprietary" }
@@ -25,11 +25,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Real SenseVoice / FunASR inference stack.
+# faster-whisper (CTranslate2) real STT inference stack — no torch needed.
 stt-full = [
-    "torch>=2.2",
-    "torchaudio>=2.2",
-    "funasr>=1.3.12",
+    "faster-whisper>=1.0,<2.0",
+    "onnxruntime>=1.18,<2.0",
 ]
 # Real Kokoro TTS inference stack.
 tts-full = [

@@ -4,20 +4,30 @@ STT inference engines.
 `STTEngine` is the abstract interface the worker pipeline talks to.
 Two implementations:
 
-  - DummyEngine       No ML deps required. Produces a deterministic,
-                      audio-derived placeholder transcript. Lets you run
-                      the entire WS/ring-buffer/VAD/protocol pipeline in
-                      CI or local dev without downloading any model
-                      weights. Selected via STT_ENGINE=dummy (default).
+  - DummyEngine     No ML deps required. Produces a deterministic,
+                    audio-derived placeholder transcript. Lets you run
+                    the entire WS/ring-buffer/VAD/protocol pipeline in CI
+                    or local dev without downloading any model weights.
+                    Selected via STT_ENGINE=dummy (default).
 
-  - SenseVoiceEngine  Wraps FunASR's `AutoModel(model="iic/SenseVoiceSmall",
-                      vad_model="fsmn-vad", ...)`. Model load + inference
-                      are both blocking/CPU-bound, so they're always run
-                      in a thread executor and never block the event loop.
-                      Selected via STT_ENGINE=sensevoice.
+  - WhisperEngine   Wraps faster-whisper (CTranslate2 backend — no torch
+                    dependency at all, which matters a lot on a
+                    RAM-constrained VPS). Model load + inference are both
+                    blocking/CPU-bound, so they're always run in a thread
+                    executor and never block the event loop. Selected via
+                    STT_ENGINE=whisper.
 
 Swap engines purely via config — the worker (worker.py) never imports a
 concrete engine class directly.
+
+Why faster-whisper over SenseVoice (see docs/ADR-004): SenseVoiceSmall's
+language-ID mechanism only covers zh/en/yue/ja/ko — there is no
+Indonesian token, so short/ambiguous audio would get mis-tagged into
+Mandarin/Japanese and the model would hallucinate plausible-looking CJK
+text rather than emit nothing. faster-whisper's underlying Whisper models
+have an explicit `id` (Indonesian) language code, and forcing a language
+(STT_LANGUAGE=en/id/...) instead of "auto" avoids language-ID guessing
+entirely for short utterances like wake-word checks.
 """
 from __future__ import annotations
 
@@ -78,20 +88,20 @@ class DummyEngine(STTEngine):
         return {"engine": self.name, "ready": self._ready}
 
 
-class SenseVoiceEngine(STTEngine):
+class WhisperEngine(STTEngine):
     """
-    Real FunASR/SenseVoice engine.
+    faster-whisper (CTranslate2) engine — no torch dependency.
 
-    pip install -r requirements-stt.txt (torch, torchaudio, funasr) before
-    using STT_ENGINE=sensevoice.
+    pip install -r requirements-stt.txt (faster-whisper + onnxruntime)
+    before using STT_ENGINE=whisper. Model weights download automatically
+    from Hugging Face on first load (cached under ~/.cache/huggingface).
     """
 
-    name = "sensevoice"
+    name = "whisper"
 
     def __init__(self, settings: STTSettings) -> None:
         self.settings = settings
         self._model: Any = None
-        self._postprocess: Any = None
         self._load_lock = asyncio.Lock()
         self._load_error: str | None = None
 
@@ -106,28 +116,26 @@ class SenseVoiceEngine(STTEngine):
                 self._model = await loop.run_in_executor(None, self._load_model_blocking)
             except Exception as exc:  # pragma: no cover - depends on env/weights
                 self._load_error = str(exc)
-                log.error("stt.engine.sensevoice.load_failed", error=str(exc))
+                log.error("stt.engine.whisper.load_failed", error=str(exc))
                 raise
 
     def _load_model_blocking(self) -> Any:
-        # Imported lazily so this module is importable without the ML stack
+        # Imported lazily so this module is importable without faster-whisper
         # installed (DummyEngine is usable in a minimal environment).
-        from funasr import AutoModel  # type: ignore[import-not-found]
-        from funasr.utils.postprocess_utils import (  # type: ignore[import-not-found]
-            rich_transcription_postprocess,
-        )
+        from faster_whisper import WhisperModel
 
         start = time.perf_counter()
-        model = AutoModel(
-            model=self.settings.model,
-            vad_model=self.settings.vad_model,
+        model = WhisperModel(
+            self.settings.model,
             device=self.settings.device,
+            compute_type=self.settings.compute_type,
+            cpu_threads=self.settings.cpu_threads,
         )
-        self._postprocess = rich_transcription_postprocess
         log.info(
-            "stt.engine.sensevoice.loaded",
+            "stt.engine.whisper.loaded",
             model=self.settings.model,
             device=self.settings.device,
+            compute_type=self.settings.compute_type,
             elapsed_ms=round((time.perf_counter() - start) * 1000, 1),
         )
         return model
@@ -146,26 +154,28 @@ class SenseVoiceEngine(STTEngine):
         await self._ensure_loaded()
         loop = asyncio.get_running_loop()
         waveform = (pcm_int16.astype(np.float32) / 32768.0).copy()
-        text = await loop.run_in_executor(
-            None, self._infer_blocking, waveform, sample_rate
+        text, detected_language = await loop.run_in_executor(
+            None, self._infer_blocking, waveform, is_final
         )
-        return TranscriptResult(text=text, is_final=is_final, language=self.settings.language)
+        return TranscriptResult(text=text, is_final=is_final, language=detected_language)
 
-    def _infer_blocking(self, waveform: np.ndarray, sample_rate: int) -> str:
-        result = self._model.generate(
-            input=waveform,
-            cache={},
-            language=self.settings.language,
-            use_itn=True,
-            batch_size_s=60,
-            merge_vad=True,
+    def _infer_blocking(self, waveform: np.ndarray, is_final: bool) -> tuple[str, str | None]:
+        language = None if self.settings.language == "auto" else self.settings.language
+        # Partials favor latency (greedy decode); finals get full beam
+        # search. Whisper's own bundled Silero VAD (vad_filter=True) trims
+        # any residual leading/trailing silence inside the utterance —
+        # our own SileroVAD gate (stt/silero_vad.py) already screened out
+        # utterances with NO speech at all before this is ever called.
+        segments, info = self._model.transcribe(
+            waveform,
+            language=language,
+            beam_size=1 if not is_final else self.settings.beam_size,
+            vad_filter=True,
+            vad_parameters=dict(min_silence_duration_ms=500),
+            condition_on_previous_text=False,
         )
-        if not result:
-            return ""
-        raw_text = result[0].get("text", "")
-        if self._postprocess is not None:
-            return str(self._postprocess(raw_text))
-        return str(raw_text)
+        text = " ".join(segment.text.strip() for segment in segments).strip()
+        return text, getattr(info, "language", None)
 
     def health(self) -> dict[str, Any]:
         return {
@@ -174,10 +184,11 @@ class SenseVoiceEngine(STTEngine):
             "load_error": self._load_error,
             "model": self.settings.model,
             "device": self.settings.device,
+            "compute_type": self.settings.compute_type,
         }
 
 
 def build_engine(settings: STTSettings) -> STTEngine:
-    if settings.engine == "sensevoice":
-        return SenseVoiceEngine(settings)
+    if settings.engine == "whisper":
+        return WhisperEngine(settings)
     return DummyEngine(settings)
