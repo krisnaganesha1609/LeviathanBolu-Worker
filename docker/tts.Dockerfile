@@ -28,6 +28,12 @@ COPY tts ./tts
 COPY config ./config
 
 RUN useradd --create-home --uid 1000 leviathan && chown -R leviathan:leviathan /app
+
+# Same fix as docker/stt.Dockerfile: pre-create the cache dir with correct
+# ownership before the named volume (tts-model-cache) mounts over it, so
+# the non-root `leviathan` user can actually write to it.
+RUN mkdir -p /home/leviathan/.cache && chown -R leviathan:leviathan /home/leviathan/.cache
+
 USER leviathan
 
 EXPOSE 9002

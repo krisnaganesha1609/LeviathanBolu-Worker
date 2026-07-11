@@ -29,6 +29,18 @@ COPY stt ./stt
 COPY config ./config
 
 RUN useradd --create-home --uid 1000 leviathan && chown -R leviathan:leviathan /app
+
+# Pre-create the HF cache dir *with correct ownership* before the named
+# volume (stt-model-cache in docker-compose.yml) is mounted over it. If
+# this path doesn't exist in the image first, Docker initializes the
+# volume as root-owned on first mount, and the non-root `leviathan` user
+# below can't write to it — that's the "Permission denied .../huggingface"
+# error. Docker's local volume driver copies an empty named volume's
+# initial ownership from whatever already exists at the mount path in the
+# image, so creating+chowning it here fixes that at the source.
+ENV HF_HOME=/home/leviathan/.cache/huggingface
+RUN mkdir -p "$HF_HOME" && chown -R leviathan:leviathan /home/leviathan/.cache
+
 USER leviathan
 
 EXPOSE 9001
