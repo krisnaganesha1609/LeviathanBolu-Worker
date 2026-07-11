@@ -38,6 +38,7 @@ from typing import Any
 
 import numpy as np
 
+from common.audio import normalize_gain
 from common.config import STTSettings
 from common.logger import get_logger
 from stt.models import TranscriptResult
@@ -153,6 +154,8 @@ class WhisperEngine(STTEngine):
     ) -> TranscriptResult:
         await self._ensure_loaded()
         loop = asyncio.get_running_loop()
+        if self.settings.gain_normalize:
+            pcm_int16 = normalize_gain(pcm_int16)
         waveform = (pcm_int16.astype(np.float32) / 32768.0).copy()
         text, detected_language = await loop.run_in_executor(
             None, self._infer_blocking, waveform, is_final
@@ -173,6 +176,7 @@ class WhisperEngine(STTEngine):
             vad_filter=True,
             vad_parameters=dict(min_silence_duration_ms=500),
             condition_on_previous_text=False,
+            initial_prompt=self.settings.initial_prompt or None,
         )
         text = " ".join(segment.text.strip() for segment in segments).strip()
         return text, getattr(info, "language", None)

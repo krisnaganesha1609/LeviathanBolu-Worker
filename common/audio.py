@@ -48,6 +48,34 @@ def rms_energy(samples: np.ndarray) -> float:
     return float(np.sqrt(np.mean(f * f)))
 
 
+def normalize_gain(samples: np.ndarray, target_peak: float = 0.7) -> np.ndarray:
+    """
+    Peak-normalize int16 PCM so quiet audio doesn't hurt ASR accuracy.
+
+    ASR models (Whisper included) transcribe noticeably worse on quiet
+    input — a normal-volume "test test..." recorded at low mic gain can
+    genuinely be harder to transcribe correctly than the same words
+    spoken the same way but captured louder. This scales the whole
+    utterance so its loudest sample hits `target_peak` (fraction of full
+    int16 scale, default 0.7 — leaves headroom, avoids clipping).
+
+    Silent/near-empty input is returned unchanged (nothing to normalize
+    against, and scaling pure noise up would just amplify noise).
+    """
+    if samples.size == 0:
+        return samples
+    peak = float(np.max(np.abs(samples.astype(np.float64))))
+    if peak < 50:  # effectively silent — don't blow up noise floor
+        return samples
+    target = target_peak * 32767.0
+    gain = target / peak
+    # Never attenuate (gain < 1) — only boost quiet audio, don't touch
+    # already-loud-enough recordings.
+    gain = max(gain, 1.0)
+    scaled = samples.astype(np.float64) * gain
+    return np.clip(scaled, -32768, 32767).astype(np.int16)
+
+
 class RingBuffer:
     """
     A simple growable ring buffer of int16 audio samples.

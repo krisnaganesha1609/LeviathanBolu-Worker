@@ -72,10 +72,25 @@ class STTSettings(BaseSettings):
     cpu_threads: int = Field(default=4, ge=1)
     use_gpu: bool = False
     language: str = "auto"  # "auto" | "en" | "id" | any Whisper language code
+    # Whisper has no "bias toward these N languages" mode — it picks one
+    # language per request. If your users mix Indonesian speech with
+    # English wake words, force your primary spoken language here (e.g.
+    # "id") rather than "auto" — short utterances are especially prone to
+    # language misdetection, and a forced language still transcribes
+    # short foreign-sounding proper nouns (like wake words) reasonably.
     # Beam search width. Partials use beam_size=1 (greedy, fast) regardless
     # of this setting — see WhisperEngine.transcribe(); this value is only
     # used for the authoritative final pass.
     beam_size: int = Field(default=5, ge=1)
+    # Optional vocabulary/style hint passed to Whisper as `initial_prompt`
+    # — a short piece of text whose vocabulary and phrasing biases
+    # decoding (e.g. include your wake words / common command phrases).
+    # Empty string = no hint.
+    initial_prompt: str = ""
+    # Peak-normalize quiet audio before it reaches the model (see
+    # common.audio.normalize_gain) — ASR accuracy drops noticeably on
+    # low-volume input. Only ever boosts, never attenuates.
+    gain_normalize: bool = True
 
     # Silence/segmentation policy (ADR-005): speech considered started once
     # RMS energy crosses vad_rms_threshold; a partial is offered no more
