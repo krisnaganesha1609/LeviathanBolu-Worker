@@ -182,6 +182,7 @@ class STTSession:
         async with self._infer_lock:
             self.fsm.transition(STTState.PROCESSING)
             full_audio = self.segmenter.drain()
+            self._maybe_dump_wav(full_audio)
             start = time.perf_counter()
             with self._latency.stage("final_inference"):
                 if full_audio.size == 0:
@@ -211,6 +212,26 @@ class STTSession:
             **self.audio_metrics.as_dict(),
         )
         return result
+
+    def _maybe_dump_wav(self, audio) -> None:
+        """Debug helper — see STT_DEBUG_DUMP_AUDIO_DIR in .env. Writes the
+        exact PCM this session is about to transcribe to a .wav file so you
+        can listen to it directly instead of inferring content from the
+        (possibly garbage/hallucinated) transcript."""
+        dump_dir = self.stt_settings.debug_dump_audio_dir
+        if not dump_dir or audio.size == 0:
+            return
+        import os
+        import wave
+
+        os.makedirs(dump_dir, exist_ok=True)
+        path = os.path.join(dump_dir, f"{self.session_id}.wav")
+        with wave.open(path, "wb") as wf:
+            wf.setnchannels(self.audio_settings.channels)
+            wf.setsampwidth(2)  # int16
+            wf.setframerate(self.audio_settings.sample_rate)
+            wf.writeframes(audio.tobytes())
+        log.info("stt.session.debug_wav_dumped", session_id=self.session_id, path=path)
 
     def close(self) -> None:
         self.metrics_registry.session_ended()

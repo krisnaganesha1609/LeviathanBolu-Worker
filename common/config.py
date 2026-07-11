@@ -83,6 +83,12 @@ class STTSettings(BaseSettings):
     postroll_ms: int = Field(default=500, ge=0)
     sliding_window_seconds: float = Field(default=4.0, ge=0.5)
 
+    # Debug only: set to a writable path (e.g. /tmp/stt-dumps) to save every
+    # finalized utterance as a .wav file, so you can literally listen to
+    # what the worker received instead of guessing from transcript output.
+    # Empty string (default) = disabled, zero overhead.
+    debug_dump_audio_dir: str = ""
+
 
 class TTSSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="TTS_", env_file=".env", extra="ignore")
