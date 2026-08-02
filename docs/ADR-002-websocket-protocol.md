@@ -1,24 +1,24 @@
 # ADR-002: WebSocket Protocol
 
 ## Status
-Accepted — **supersedes** an earlier proposal to wrap audio chunks in a
-JSON envelope (`{"event":"audio_chunk","sequence":N}` + binary). See
-"Rejected alternative" below.
+Accepted, amended to **Wire v1.1** (see Addendum below) — **supersedes**
+an earlier proposal to wrap audio chunks in a JSON envelope
+(`{"event":"audio_chunk","sequence":N}` + binary). See "Rejected
+alternative" below.
 
 ## Context
-`assistant/stt_tts.go` already exists and is treated as a fixed contract
-for this phase of the project (per the project owner: "kontrak Go yang
-kamu buat menurutku sudah bagus dan tidak perlu diubah"). It implements:
+The Go worker client (`Orchestrator/internal/assistant/python_workers.go`)
+already exists and is treated as a fixed contract for this phase of the
+project (per the project owner: "kontrak Go yang kamu buat menurutku
+sudah bagus dan tidak perlu diubah"). It implements:
 
 - **STT** (`ws://…/stt`): sends raw binary PCM16LE frames with **no JSON
   envelope**, then a single JSON message `{"action":"end"}`. It reads
-  JSON text messages back and branches only on `event == "final_transcript"`;
-  any other event is silently ignored by the current read loop (see the
-  comment in `Transcribe()`: partials "bisa di-relay real-time kalau nanti
-  mau ditambah — untuk sekarang cukup ditunggu sampai final").
-- **TTS** (`ws://…/tts`): sends one JSON message `{"text":...,"personality":...}`,
-  then reads binary frames (assumed PCM) until it sees
-  `{"event":"done"}` or the socket closes.
+  JSON text messages back and branches on `event` values.
+- **TTS** (`ws://…/tts`): sends one JSON message with the full resolved
+  voice config (`{"text","voice","speed","pitch","lang","personality"}`,
+  speed/pitch as JSON numbers), then reads binary frames (assumed PCM)
+  until it sees `{"event":"done"}` or the socket closes.
 
 ## Decision
 The wire framing implemented here matches the Go code **exactly**:
@@ -78,4 +78,31 @@ messages:
 | TTS_003 | Session closed                              |
 | TTS_004 | Timeout                                     |
 | TTS_005 | Engine failure (inference threw)            |
-| TTS_006 | Unknown personality (non-fatal — falls back to default) |
+| TTS_006 | Invalid voice config (missing/blank `voice` — fatal, Go must send a complete voice config) |
+
+## Addendum — Wire v1.1 (runtime-protocol alignment)
+
+The Orchestrator now speaks the runtime protocol (Documentation 05/25)
+to Flutter and acts as the translation gateway. To support that, the
+worker wire gained the following (all shapes in `common/protocol.py`):
+
+1. **Streaming STT end-to-end.** Go dials the STT worker when the user
+   *starts* speaking and forwards PCM frames as they arrive, relaying
+   `partial_transcript` upstream as `voice.stt.partial` in real time.
+   No worker change was needed — the worker always emitted partials.
+2. **`{"action":"cancel"}` on STT** — aborts the session (drops any
+   in-flight partial, discards buffered audio, no `final_transcript`).
+   Used for voice barge-in / turn interruption. TTS cancellation stays
+   implicit: Go closes the socket mid-stream, which the worker now logs
+   as a clean client cancel instead of an engine error.
+3. **Structured error events** on both workers:
+   `{"event":"error","code":"STT_00x","recoverable":bool,"retryable":bool,
+   "message":"..."}` — the Go gateway maps these into the runtime error
+   contract (03_SYSTEM_CONTRACTS.md) without parsing message strings.
+4. **`speed`/`pitch` accept JSON numbers** (what Go actually sends —
+   float32/int8), with strings still tolerated for manual testing.
+
+The event names on this hop intentionally stay `partial_transcript` /
+`final_transcript` / `done` / `error` (not `voice.stt.*`): the runtime
+event vocabulary belongs to the Flutter↔Orchestrator hop, and the Go
+gateway owns the mapping. This keeps the worker wire minimal and stable.

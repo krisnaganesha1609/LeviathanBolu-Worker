@@ -33,21 +33,33 @@ class SileroVAD:
         self.threshold = threshold
         self.min_speech_duration_ms = min_speech_duration_ms
         self._vad_options = None  # lazy: importing faster_whisper.vad loads onnxruntime
+        self._unavailable = False  # faster_whisper not installed (dummy/slim image)
 
     def warm_up(self) -> None:
         """Load the VadOptions + trigger the ONNX session's lazy init with a
         throwaway inference, so the first real request doesn't pay for it.
         Call this from a thread executor at startup (see stt/server.py) —
-        it's blocking, same as any other model load (ADR-004)."""
+        it's blocking, same as any other model load (ADR-004).
+
+        On the slim/dummy image faster_whisper isn't installed at all; in
+        that case the VAD degrades to fail-open (everything counts as
+        speech) instead of preventing the worker from booting."""
         self._ensure_loaded()
+        if self._unavailable:
+            log.warning("stt.silero_vad.unavailable", reason="faster_whisper not installed; VAD fails open")
+            return
         silence = np.zeros(1600, dtype=np.int16)  # 100ms @ 16kHz, cheap
         self.has_speech(silence, 16000)
         log.info("stt.silero_vad.ready", threshold=self.threshold)
 
     def _ensure_loaded(self):
-        if self._vad_options is not None:
+        if self._vad_options is not None or self._unavailable:
             return
-        from faster_whisper.vad import VadOptions
+        try:
+            from faster_whisper.vad import VadOptions
+        except ImportError:
+            self._unavailable = True
+            return
 
         self._vad_options = VadOptions(
             threshold=self.threshold,
@@ -61,6 +73,9 @@ class SileroVAD:
         if audio_int16.size == 0:
             return []
         self._ensure_loaded()
+        if self._unavailable:
+            # Fail open: no VAD available, let everything through to ASR.
+            return [{"start": 0, "end": len(audio_int16)}]
         from faster_whisper.vad import get_speech_timestamps
 
         waveform = audio_int16.astype(np.float32) / 32768.0

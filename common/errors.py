@@ -1,11 +1,11 @@
 """
 Structured error codes instead of bare `raise Exception(...)`.
 
-Go only ever branches on the JSON `event` field ("final_transcript" /
-"done"); any other event, including "error", is safely ignored by its
-current read loop. So emitting `{"event":"error","code":"STT_002",...}`
-is a pure *addition* to the wire contract — safe today, and gives Go
-something explicit to branch on if/when it's updated to handle errors.
+Error events carry the structured error contract (`code`, `recoverable`,
+`retryable`, `message`) so the Go gateway can map worker failures into
+runtime error events (03_SYSTEM_CONTRACTS.md §Error Contract) without
+parsing message strings. `message` still embeds the code prefix for
+human-readable logs.
 """
 from __future__ import annotations
 
@@ -28,7 +28,17 @@ class TTSErrorCode(str, Enum):
     SESSION_CLOSED = "TTS_003"
     TIMEOUT = "TTS_004"
     ENGINE_FAILURE = "TTS_005"
-    UNKNOWN_PERSONALITY = "TTS_006"  # non-fatal: we fall back to default, still logged
+    # Missing/empty `voice` (or unparseable speed/pitch beyond graceful
+    # fallback) — fatal now: the worker has no static voice table to fall
+    # back to, Go must always send a complete, valid voice config.
+    INVALID_VOICE_CONFIG = "TTS_006"
+
+
+# retryable = the exact same request may succeed on retry (transient);
+# non-retryable = the request itself is wrong and must change first.
+_RETRYABLE: frozenset[str] = frozenset(
+    {"STT_001", "STT_004", "STT_005", "TTS_001", "TTS_004", "TTS_005"}
+)
 
 
 class WorkerError(Exception):
@@ -39,8 +49,18 @@ class WorkerError(Exception):
 
 
 def stt_error_event(code: STTErrorCode, message: str) -> STTErrorEvent:
-    return STTErrorEvent(message=f"{code.value}: {message}")
+    return STTErrorEvent(
+        code=code.value,
+        recoverable=True,
+        retryable=code.value in _RETRYABLE,
+        message=f"{code.value}: {message}",
+    )
 
 
 def tts_error_event(code: TTSErrorCode, message: str) -> TTSErrorEvent:
-    return TTSErrorEvent(message=f"{code.value}: {message}")
+    return TTSErrorEvent(
+        code=code.value,
+        recoverable=True,
+        retryable=code.value in _RETRYABLE,
+        message=f"{code.value}: {message}",
+    )

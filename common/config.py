@@ -135,8 +135,6 @@ class TTSSettings(BaseSettings):
     engine: Literal["dummy", "kokoro"] = "dummy"
     model_path: str = "/models/kokoro-v1.0.onnx"
     voices_path: str = "/models/voices-v1.0.bin"
-    default_personality: str = "LEVIATHAN"
-    personalities_path: str = "config/personalities.yaml"
     chunk_pace: bool = False
     use_gpu: bool = False
     max_session_seconds: int = Field(default=60, ge=1)

@@ -22,7 +22,13 @@ from common.config import get_audio_settings, get_general_settings, get_stt_sett
 from common.errors import STTErrorCode, WorkerError, stt_error_event
 from common.logger import configure_logging, get_logger
 from common.metrics import stt_metrics
-from common.protocol import HealthResponse, STTEndAction, STTFinalTranscript, STTPartialTranscript
+from common.protocol import (
+    HealthResponse,
+    STTCancelAction,
+    STTEndAction,
+    STTFinalTranscript,
+    STTPartialTranscript,
+)
 from common.websocket import send_json
 from stt.silero_vad import SileroVAD
 from stt.whisper_engine import STTEngine, build_engine
@@ -107,9 +113,15 @@ async def stt_endpoint(websocket: WebSocket) -> None:
 
     session_id = websocket.query_params.get("session_id")
     conversation_id = websocket.query_params.get("conversation_id")
+    # Optional per-user language preference (e.g. Go's user_settings.Language)
+    # — ?language=id overrides STT_LANGUAGE for this session only. Absent
+    # entirely = falls back to the engine's configured default, so this is
+    # a zero-risk additive param exactly like session_id/conversation_id
+    # (ADR-002) — Go doesn't have to send it for anything to keep working.
+    language = websocket.query_params.get("language")
     session = STTSession(
         engine, audio_settings, stt_settings, stt_metrics, silero_vad,
-        session_id=session_id, conversation_id=conversation_id,
+        session_id=session_id, conversation_id=conversation_id, language=language,
     )
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=256)
@@ -139,8 +151,24 @@ async def stt_endpoint(websocket: WebSocket) -> None:
             elif kind == "text":
                 try:
                     obj = json.loads(payload)
+                except json.JSONDecodeError:
+                    log.debug("stt.endpoint.ignored_text", session_id=session.session_id, raw=payload)
+                    continue
+
+                try:
+                    STTCancelAction.model_validate(obj)
+                except ValidationError:
+                    pass
+                else:
+                    # Barge-in / turn interruption: abort without a final
+                    # transcript (Wire v1.1 {"action":"cancel"}).
+                    session.cancel()
+                    log.info("stt.session.cancelled", session_id=session.session_id)
+                    break
+
+                try:
                     STTEndAction.model_validate(obj)
-                except (json.JSONDecodeError, ValidationError):
+                except ValidationError:
                     log.debug("stt.endpoint.ignored_text", session_id=session.session_id, raw=payload)
                 else:
                     result = await session.finalize()

@@ -21,10 +21,19 @@ SAMPLE_TEXT = (
 )
 
 
-async def run_one(url: str, personality: str) -> tuple[float, float]:
+async def run_one(url: str, personality: str, voice: str) -> tuple[float, float]:
     async with websockets.connect(url) as ws:
         start = time.perf_counter()
-        await ws.send(json.dumps({"text": SAMPLE_TEXT, "personality": personality}))
+        # voice is required (Go resolves it from user settings); speed and
+        # pitch are JSON numbers, matching the Go wire format.
+        await ws.send(json.dumps({
+            "text": SAMPLE_TEXT,
+            "personality": personality,
+            "voice": voice,
+            "speed": 1.0,
+            "pitch": 0,
+            "lang": "id-ID",
+        }))
         ttfb_ms: float | None = None
         while True:
             raw = await asyncio.wait_for(ws.recv(), timeout=30)
@@ -44,13 +53,14 @@ async def main() -> None:
     ap.add_argument("--n", type=int, default=20)
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--personality", default="LEVIATHAN")
+    ap.add_argument("--voice", default="am_onyx")
     args = ap.parse_args()
 
     sem = asyncio.Semaphore(args.concurrency)
 
     async def bounded() -> tuple[float, float]:
         async with sem:
-            return await run_one(args.url, args.personality)
+            return await run_one(args.url, args.personality, args.voice)
 
     start = time.perf_counter()
     results = await asyncio.gather(*(bounded() for _ in range(args.n)))

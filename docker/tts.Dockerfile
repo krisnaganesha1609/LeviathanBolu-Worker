@@ -8,8 +8,8 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl \
-        libsndfile1 \
+    curl \
+    libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt requirements-tts.txt ./
@@ -18,14 +18,13 @@ COPY requirements.txt requirements-tts.txt ./
 # scipy, librosa). Default is dummy-engine-only for a lightweight image.
 ARG TTS_FULL=0
 RUN if [ "$TTS_FULL" = "1" ]; then \
-        pip install --no-cache-dir -r requirements-tts.txt; \
+    pip install --no-cache-dir -r requirements-tts.txt; \
     else \
-        pip install --no-cache-dir -r requirements.txt; \
+    pip install --no-cache-dir -r requirements.txt; \
     fi
 
 COPY common ./common
 COPY tts ./tts
-COPY config ./config
 
 RUN useradd --create-home --uid 1000 leviathan && chown -R leviathan:leviathan /app
 

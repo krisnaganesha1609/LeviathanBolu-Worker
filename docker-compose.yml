@@ -15,7 +15,6 @@ services:
     ports:
       - "9001:9001"
     volumes:
-      - ./config:/app/config:ro
       - stt-model-cache:/home/leviathan/.cache
     restart: unless-stopped
     healthcheck:
@@ -39,7 +38,6 @@ services:
     ports:
       - "9002:9002"
     volumes:
-      - ./config:/app/config:ro
       - ./models:/models:ro # mount kokoro-v1.0.onnx + voices-v1.0.bin here for TTS_ENGINE=kokoro
       - tts-model-cache:/home/leviathan/.cache
     restart: unless-stopped

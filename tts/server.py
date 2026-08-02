@@ -6,6 +6,11 @@ request, reads binary frames until it sees {"event":"done"} (or the socket
 closes), then closes the connection itself — so this endpoint only needs
 to handle a single request/response cycle per connection, not a
 long-lived multi-turn session like STT.
+
+No static personality->voice table lives here: `voice`/`speed`/`pitch`/
+`lang` are read straight off the request (Go resolves these from
+user_settings.domain.go's WakeWordConfig) and validated in
+tts/voice_config.py.
 """
 from __future__ import annotations
 
@@ -23,7 +28,7 @@ from common.metrics import tts_metrics
 from common.protocol import HealthResponse, TTSDoneEvent, TTSRequest
 from common.websocket import send_json
 from tts.kokoro_engine import TTSEngine, build_engine
-from tts.personalities import PersonalityRegistry
+from tts.voice_config import InvalidVoiceConfig, parse_voice_config
 from tts.worker import TTSSession
 
 log = get_logger(__name__)
@@ -35,19 +40,11 @@ async def lifespan(app: FastAPI):
     settings = get_tts_settings()
     audio_settings = get_audio_settings()
     engine: TTSEngine = build_engine(settings, audio_settings)
-    personalities = PersonalityRegistry(settings.personalities_path, settings.default_personality)
-    log.info(
-        "tts.server.starting",
-        engine=settings.engine,
-        host=settings.host,
-        port=settings.port,
-        personalities=personalities.names(),
-    )
+    log.info("tts.server.starting", engine=settings.engine, host=settings.host, port=settings.port)
     start = time.monotonic()
     await engine.warm_up()  # model lifecycle: load once at startup, not per-request
     log.info("tts.server.ready", warm_up_seconds=round(time.monotonic() - start, 2))
     app.state.engine = engine
-    app.state.personalities = personalities
     app.state.started_at = time.monotonic()
     yield
     log.info("tts.server.shutdown")
@@ -69,7 +66,7 @@ async def health() -> HealthResponse:
         engine=engine_health.get("engine", "unknown"),
         active_sessions=tts_metrics.active_sessions,
         uptime_seconds=round(time.monotonic() - app.state.started_at, 1),
-        detail={**engine_health, "personalities": app.state.personalities.names()},
+        detail=engine_health,
     )
 
 
@@ -85,7 +82,6 @@ async def tts_endpoint(websocket: WebSocket) -> None:
     audio_settings = get_audio_settings()
     tts_settings = get_tts_settings()
     engine: TTSEngine = app.state.engine
-    personalities: PersonalityRegistry = app.state.personalities
 
     session_id = websocket.query_params.get("session_id")
     conversation_id = websocket.query_params.get("conversation_id")
@@ -104,17 +100,36 @@ async def tts_endpoint(websocket: WebSocket) -> None:
         return
 
     session = TTSSession(
-        engine, personalities, audio_settings, tts_settings, tts_metrics,
+        engine, audio_settings, tts_settings, tts_metrics,
         session_id=session_id, conversation_id=conversation_id,
     )
 
     try:
-        async for frame in session.stream_reply(request.text, request.personality):
+        voice_config = parse_voice_config(
+            voice=request.voice,
+            speed=request.speed,
+            pitch=request.pitch,
+            lang=request.lang,
+            session_id=session.session_id,
+        )
+    except InvalidVoiceConfig as exc:
+        log.warning("tts.endpoint.invalid_voice_config", session_id=session.session_id, error=str(exc))
+        await send_json(websocket, tts_error_event(TTSErrorCode.INVALID_VOICE_CONFIG, str(exc)))
+        session.close()
+        await websocket.close()
+        return
+
+    try:
+        async for frame in session.stream_reply(request.text, voice_config, request.personality):
             if websocket.application_state != WebSocketState.CONNECTED:
                 break
             await websocket.send_bytes(frame)
         if websocket.application_state == WebSocketState.CONNECTED:
             await send_json(websocket, TTSDoneEvent())
+    except WebSocketDisconnect:
+        # Go cancels TTS by closing the socket mid-stream (barge-in /
+        # turn interruption) — expected behavior, not an engine failure.
+        log.info("tts.session.cancelled_by_client", session_id=session.session_id)
     except Exception as exc:  # pragma: no cover - defensive
         log.error("tts.endpoint.unhandled_error", session_id=session.session_id, error=str(exc))
         if websocket.application_state == WebSocketState.CONNECTED:

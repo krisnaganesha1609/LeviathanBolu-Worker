@@ -33,7 +33,7 @@ import numpy as np
 from common.audio import int16_to_pcm16
 from common.config import AudioSettings, TTSSettings
 from common.logger import get_logger
-from tts.personalities import PersonalityVoiceConfig
+from tts.voice_config import VoiceConfig
 
 log = get_logger(__name__)
 
@@ -51,7 +51,7 @@ class TTSEngine(abc.ABC):
 
     @abc.abstractmethod
     def synthesize(
-        self, text: str, voice_config: PersonalityVoiceConfig
+        self, text: str, voice_config: VoiceConfig
     ) -> AsyncIterator[bytes]:
         """Async-generator: yields raw PCM16LE mono bytes at the pipeline's
         configured sample rate, one chunk per sentence."""
@@ -73,7 +73,7 @@ class DummyEngine(TTSEngine):
         log.info("tts.engine.dummy.ready")
 
     async def synthesize(
-        self, text: str, voice_config: PersonalityVoiceConfig
+        self, text: str, voice_config: VoiceConfig
     ) -> AsyncIterator[bytes]:
         sr = self.audio_settings.sample_rate
         for sentence in split_sentences(text):
@@ -137,7 +137,7 @@ class KokoroEngine(TTSEngine):
             pass  # health endpoint reports degraded; retried lazily on first request
 
     async def synthesize(
-        self, text: str, voice_config: PersonalityVoiceConfig
+        self, text: str, voice_config: VoiceConfig
     ) -> AsyncIterator[bytes]:
         await self._ensure_loaded()
         loop = asyncio.get_running_loop()
@@ -149,7 +149,7 @@ class KokoroEngine(TTSEngine):
             yield int16_to_pcm16(pcm16)
 
     def _synth_blocking(
-        self, sentence: str, voice_config: PersonalityVoiceConfig
+        self, sentence: str, voice_config: VoiceConfig
     ) -> tuple[np.ndarray, int]:
         samples, sample_rate = self._kokoro.create(
             sentence,
@@ -160,7 +160,7 @@ class KokoroEngine(TTSEngine):
         return np.asarray(samples, dtype=np.float32), int(sample_rate)
 
     def _postprocess(
-        self, samples: np.ndarray, native_sr: int, voice_config: PersonalityVoiceConfig
+        self, samples: np.ndarray, native_sr: int, voice_config: VoiceConfig
     ) -> np.ndarray:
         target_sr = self.audio_settings.sample_rate
         if native_sr != target_sr:

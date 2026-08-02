@@ -1,15 +1,19 @@
 """
-Simulates exactly what assistant/stt_tts.go does over the wire, against
-the real running STT/TTS servers (dummy engines) — this is the closest
-thing to an end-to-end integration check without an actual Go binary.
+Simulates exactly what Orchestrator/internal/assistant/python_workers.go
+does over the wire, against the real running STT/TTS servers (dummy
+engines) — this is the closest thing to an end-to-end integration check
+without an actual Go binary.
 
 STT: dial -> send N binary PCM16LE frames (320 samples/640 bytes, silence
      then a "speech" burst) -> send {"action":"end"} -> expect exactly one
      final_transcript JSON message (partials may or may not arrive first).
+     Also checks {"action":"cancel"} aborts without a final transcript.
 
-TTS: dial -> send {"text":...,"personality":...} -> expect a stream of
-     binary frames, each EXACTLY 640 bytes (320 samples @ int16) -> then
-     {"event":"done"}.
+TTS: dial -> send {"text":...,"voice":...,"speed":1.0,"pitch":0,...} (the
+     full voice config Go resolves — speed/pitch as JSON numbers) ->
+     expect a stream of binary frames, each EXACTLY 640 bytes (320
+     samples @ int16) -> then {"event":"done"}. A missing/blank voice
+     must produce a structured TTS_006 error, not a crash.
 """
 import asyncio
 import json
@@ -82,10 +86,44 @@ async def test_stt() -> None:
         print(f"[STT]  OK — {partial_count} partial(s), then final_transcript received")
 
 
-async def test_tts(personality: str) -> None:
+async def test_stt_cancel() -> None:
+    """{"action":"cancel"} must abort the session without a final transcript."""
+    uri = "ws://127.0.0.1:9001/stt"
+    async with websockets.connect(uri) as ws:
+        speech_pcm = _speech_like_pcm(0.5)
+        for i in range(0, len(speech_pcm), FRAME_BYTES):
+            frame = speech_pcm[i : i + FRAME_BYTES]
+            if len(frame) == FRAME_BYTES:
+                await ws.send(frame)
+
+        await ws.send(json.dumps({"action": "cancel"}))
+
+        # The server should close without ever sending final_transcript.
+        try:
+            while True:
+                raw = await asyncio.wait_for(ws.recv(), timeout=5)
+                if isinstance(raw, str):
+                    msg = json.loads(raw)
+                    assert msg.get("event") != "final_transcript", (
+                        f"cancel must not produce a final transcript: {msg}"
+                    )
+        except websockets.exceptions.ConnectionClosed:
+            pass
+        print("[STT]  OK — cancel aborted the session without final_transcript")
+
+
+async def test_tts(personality: str, voice: str, speed: float, pitch: int) -> None:
     uri = "ws://127.0.0.1:9002/tts"
     async with websockets.connect(uri) as ws:
-        await ws.send(json.dumps({"text": "Halo. Ini tes LEVIATHAN.", "personality": personality}))
+        # speed/pitch as JSON numbers — exactly what Go sends.
+        await ws.send(json.dumps({
+            "text": "Halo. Ini tes LEVIATHAN.",
+            "personality": personality,
+            "voice": voice,
+            "speed": speed,
+            "pitch": pitch,
+            "lang": "id-ID",
+        }))
 
         frame_count = 0
         total_bytes = 0
@@ -111,11 +149,26 @@ async def test_tts(personality: str) -> None:
         )
 
 
+async def test_tts_missing_voice() -> None:
+    """Missing voice must yield a structured TTS_006 error, not a crash."""
+    uri = "ws://127.0.0.1:9002/tts"
+    async with websockets.connect(uri) as ws:
+        await ws.send(json.dumps({"text": "Halo tanpa voice."}))
+        raw = await asyncio.wait_for(ws.recv(), timeout=10)
+        assert isinstance(raw, str), f"expected JSON error, got binary: {raw!r}"
+        msg = json.loads(raw)
+        assert msg.get("event") == "error", f"expected error event: {msg}"
+        assert msg.get("code") == "TTS_006", f"expected TTS_006: {msg}"
+        assert msg.get("retryable") is False, f"TTS_006 must not be retryable: {msg}"
+        print("[TTS]  OK — missing voice rejected with structured TTS_006 error")
+
+
 async def main() -> None:
     await test_stt()
-    await test_tts("LEVIATHAN")
-    await test_tts("BOLU")
-    await test_tts("UNKNOWN_PERSONALITY_TYPO")  # must fall back, not crash
+    await test_stt_cancel()
+    await test_tts("LEVIATHAN", "am_onyx", 0.85, -3)
+    await test_tts("BOLU", "af_bella", 1.15, 2)
+    await test_tts_missing_voice()
     print("\nALL INTEGRATION CHECKS PASSED")
 
 

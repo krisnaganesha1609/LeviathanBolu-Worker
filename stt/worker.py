@@ -53,6 +53,7 @@ class STTSession:
         *,
         session_id: str | None = None,
         conversation_id: str | None = None,
+        language: str | None = None,
     ):
         self.engine = engine
         self.audio_settings = audio_settings
@@ -62,6 +63,11 @@ class STTSession:
         self.state = STTSessionState()
         self.session_id = session_id or new_id("stt")
         self.conversation_id = conversation_id or ""
+        # Per-user language preference (e.g. Go's user_settings.Language,
+        # passed as ?language=... — see stt/server.py). None/empty means
+        # "use this engine's configured STT_LANGUAGE default" — see
+        # WhisperEngine._infer_blocking.
+        self.language = language or None
         self.decoder = PCMFrameDecoder(session_id=self.session_id)
         self.fsm = STTStateMachine(self.session_id)
         self.segmenter = SpeechSegmenter(
@@ -84,6 +90,7 @@ class STTSession:
             "stt.session.started",
             session_id=self.session_id,
             conversation_id=self.conversation_id,
+            language=self.language or "default",
         )
 
     @property
@@ -155,7 +162,10 @@ class STTSession:
             with self._latency.stage("partial_inference"):
                 try:
                     result = await self.engine.transcribe(
-                        window, sample_rate=self.audio_settings.sample_rate, is_final=False
+                        window,
+                        sample_rate=self.audio_settings.sample_rate,
+                        is_final=False,
+                        language=self.language,
                     )
                 except Exception as exc:
                     log.error(
@@ -193,7 +203,10 @@ class STTSession:
                 else:
                     try:
                         result = await self.engine.transcribe(
-                            full_audio, sample_rate=self.audio_settings.sample_rate, is_final=True
+                            full_audio,
+                            sample_rate=self.audio_settings.sample_rate,
+                            is_final=True,
+                            language=self.language,
                         )
                     except Exception as exc:
                         raise WorkerError(STTErrorCode.ENGINE_FAILURE, str(exc)) from exc
@@ -272,6 +285,18 @@ class STTSession:
             wf.setframerate(self.audio_settings.sample_rate)
             wf.writeframes(audio.tobytes())
         log.info("stt.session.debug_wav_dumped", session_id=self.session_id, path=path)
+
+    def cancel(self) -> None:
+        """Abort the session (client sent {"action":"cancel"}): drop any
+        in-flight partial and discard buffered audio without running a
+        final inference pass. Cancellation ends the connection, so the
+        state machine goes straight to DISCONNECTED (legal from every
+        state) rather than through FINISHED/IDLE."""
+        if self._partial_task is not None and not self._partial_task.done():
+            self._partial_task.cancel()
+        self.segmenter.drain()
+        self.state.ended = True
+        self.fsm.transition(STTState.DISCONNECTED)
 
     def close(self) -> None:
         self.metrics_registry.session_ended()

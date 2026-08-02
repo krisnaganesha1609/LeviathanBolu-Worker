@@ -1,10 +1,14 @@
 """
 Per-request TTS pipeline (ADR-001, ADR-003):
 
-    TTSRequest -> PersonalityRegistry.resolve() -> engine.synthesize()
+    TTSRequest (voice/speed/pitch/lang from Go) -> engine.synthesize()
                -> TTSStreamer (fixed 20ms frames) -> caller yields to WS
 
 State machine: IDLE -> SYNTHESIZING -> STREAMING -> FINISHED -> IDLE
+
+No personality->voice lookup happens in this worker — Go resolves the
+full VoiceConfig (see tts/voice_config.py) from its own data
+(user_settings.domain.go's WakeWordConfig) and sends it on every request.
 """
 from __future__ import annotations
 
@@ -18,8 +22,8 @@ from common.metrics import MetricsRegistry
 from common.state_machine import TTSState, TTSStateMachine
 from common.utils import new_id
 from tts.kokoro_engine import TTSEngine
-from tts.personalities import PersonalityRegistry
 from tts.streamer import TTSStreamer
+from tts.voice_config import VoiceConfig
 
 log = get_logger(__name__)
 
@@ -28,7 +32,6 @@ class TTSSession:
     def __init__(
         self,
         engine: TTSEngine,
-        personalities: PersonalityRegistry,
         audio_settings: AudioSettings,
         tts_settings: TTSSettings,
         metrics: MetricsRegistry,
@@ -37,7 +40,6 @@ class TTSSession:
         conversation_id: str | None = None,
     ) -> None:
         self.engine = engine
-        self.personalities = personalities
         self.audio_settings = audio_settings
         self.tts_settings = tts_settings
         self.metrics_registry = metrics
@@ -50,16 +52,9 @@ class TTSSession:
         self.metrics_registry.session_started()
         log.info("tts.session.started", session_id=self.session_id, conversation_id=self.conversation_id)
 
-    async def stream_reply(self, text: str, personality: str) -> AsyncIterator[bytes]:
-        voice_config, matched = self.personalities.resolve(personality)
-        if not matched:
-            log.warning(
-                "tts.session.personality_fallback",
-                session_id=self.session_id,
-                requested=personality,
-                using=self.personalities.default_name,
-            )
-
+    async def stream_reply(
+        self, text: str, voice_config: VoiceConfig, personality_label: str | None = None
+    ) -> AsyncIterator[bytes]:
         self.fsm.transition(TTSState.SYNTHESIZING)
         streamer = TTSStreamer(
             self.audio_settings.frame_samples,
@@ -88,8 +83,11 @@ class TTSSession:
         self.fsm.transition(TTSState.FINISHED)
         self.fsm.transition(TTSState.IDLE)
         self._latency.emit(
-            personality=personality,
+            personality=personality_label,
             voice=voice_config.voice,
+            speed=voice_config.speed,
+            pitch=voice_config.pitch,
+            lang=voice_config.lang,
             frames_sent=streamer.frames_sent,
             bytes_sent=streamer.bytes_sent,
             time_to_first_byte_ms=round(ttfb_ms, 2) if ttfb_ms is not None else None,

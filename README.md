@@ -1,8 +1,9 @@
 # LEVIATHAN — Python Worker Server (STT + TTS)
 
 Asyncio-native STT (faster-whisper + Silero VAD) and TTS (Kokoro) WebSocket
-microservices for the LEVIATHAN assistant, built to match
-`assistant/stt_tts.go`'s wire contract exactly. See `docs/ADR-*.md` for
+microservices for the LEVIATHAN assistant, built to match the wire
+contract of `Orchestrator/internal/assistant/python_workers.go` exactly
+("Worker Wire v1.1" — see `common/protocol.py`). See `docs/ADR-*.md` for
 the design decisions behind every non-obvious choice in this codebase —
 read those before changing protocol-level behavior.
 
@@ -11,7 +12,6 @@ python-workers/
   common/          shared config, logging, protocol, audio, metrics, errors
   stt/             faster-whisper + Silero VAD worker (ws://.../stt)
   tts/             Kokoro worker (ws://.../tts)
-  config/          personalities.yaml (voice mapping, no if/else)
   docs/            ADR-001..005 (architecture decision records)
   tests/           pytest unit tests + integration_smoke.py (live WS test)
   benchmark/       bench_stt.py / bench_tts.py (latency & throughput)
@@ -36,9 +36,10 @@ python tests/integration_smoke.py   # full protocol round-trip against both
 ```
 
 Dummy engines exercise the *entire* pipeline — WebSocket, ring buffer,
-VAD, chunk normalization, state machine, metrics, personality mapping —
-with zero model downloads, which is what `integration_smoke.py` proves
-(it speaks the exact same wire protocol `assistant/stt_tts.go` does).
+VAD, chunk normalization, state machine, metrics — with zero model
+downloads, which is what `integration_smoke.py` proves (it speaks the
+exact same wire protocol the Go orchestrator's
+`internal/assistant/python_workers.go` does).
 
 ## Running the real models
 
@@ -73,8 +74,8 @@ docker compose up --build                        # dummy engines, fast
 STT_FULL=1 TTS_FULL=1 docker compose up --build   # real models (large images)
 ```
 
-Go should point at `ws://<host>:9001/stt` and `ws://<host>:9002/tts` —
-unchanged from what's already in `assistant/stt_tts.go`.
+Go should point at `ws://<host>:9001/stt` and `ws://<host>:9002/tts`
+(`STT_WORKER_URL` / `TTS_WORKER_URL` in the Orchestrator's `.env`).
 
 ## Tests & benchmarks
 
@@ -102,20 +103,12 @@ inline docs. Highlights:
 | `STT_PARTIAL_INTERVAL_MS` | 500 | min gap between partial transcripts |
 | `STT_SLIDING_WINDOW_SECONDS` | 4.0 | bounds cost of each partial pass |
 | `STT_MAX_SESSION_SECONDS` | 120 | hard per-connection safety cap |
-| `TTS_PERSONALITIES_PATH` | `config/personalities.yaml` | voice mapping |
 | `TTS_CHUNK_PACE` | `false` | pace output frames at real-time (20ms) |
 
-Personalities are pure data (`config/personalities.yaml`) — add a new
-one without touching code:
-
-```yaml
-personalities:
-  BOLU:
-    voice: af_bella
-    speed: 1.15
-    pitch: 2
-    lang: en-us
-```
+There is no personality→voice mapping in this worker: the Go
+orchestrator owns that data (`user_settings.domain.go`'s
+`WakeWordConfig`) and sends the fully-resolved `voice`/`speed`/`pitch`/
+`lang` on every TTS request (`tts/voice_config.py` just validates it).
 
 ## Health & metrics
 
